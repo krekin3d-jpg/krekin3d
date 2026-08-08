@@ -1,0 +1,20 @@
+# Ignore large video frame files (127MB zip + extracted frames folder)
+video_frames_30fps_png.zip
+frames/
+
+# Reference/screenshot images (not part of deployable site)
+Screenshot *.png
+ref.png
+92189db8dd825025ff1efda3b5ef5ea5.jpg
+c998c879ee04193629d57b47bdcb05f4.jpg
+download (5).jpg
+
+# Python server (dev only)
+server.py
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
