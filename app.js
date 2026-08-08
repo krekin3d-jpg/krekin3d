@@ -1,13 +1,7 @@
 (function () {
   'use strict';
 
-  const FRAME_COUNT = 240;
-  const FRAME_PREFIX = 'frames/frame_';
-  const FRAME_PAD = 6;
-  const FRAME_EXT = '.png';
-  const LERP_FACTOR = 0.15; // Silky smooth 60-120fps dampening
-
-  // DOM Elements
+  // ─── DOM Elements ────────────────────────────────────────────────────────────
   const canvas = document.getElementById('hero-canvas');
   const ctx = canvas.getContext('2d');
   const loader = document.getElementById('loader');
@@ -15,196 +9,273 @@
   const progressText = document.getElementById('progress-text');
   const scrollPrompt = document.getElementById('scroll-prompt');
 
-  // Animation State
-  const images = new Array(FRAME_COUNT);
-  let loadedCount = 0;
-  let targetFrame = 0;
-  let currentFrame = 0;
-  let lastRenderedIndex = -1;
+  // ─── State ───────────────────────────────────────────────────────────────────
+  let width, height, dpr;
+  let scrollProgress = 0;   // 0-1
+  let targetProgress = 0;
+  let animFrame;
 
-  // Format frame filename: frames/frame_000000.png
-  function getFrameUrl(index) {
-    const padded = String(index).padStart(FRAME_PAD, '0');
-    return `${FRAME_PREFIX}${padded}${FRAME_EXT}`;
+  // ─── Particle System ─────────────────────────────────────────────────────────
+  const PARTICLE_COUNT = 120;
+  const particles = [];
+
+  function randomRange(min, max) {
+    return min + Math.random() * (max - min);
   }
 
-  // Set up canvas dimensions with DPR scaling for crisp visuals
-  function resizeCanvas() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const width = window.innerWidth;
-    const height = window.innerHeight;
+  function createParticle() {
+    return {
+      x: Math.random() * width,
+      y: Math.random() * height,
+      baseX: 0,
+      baseY: 0,
+      vx: randomRange(-0.15, 0.15),
+      vy: randomRange(-0.25, -0.05),
+      radius: randomRange(0.8, 2.8),
+      alpha: randomRange(0.1, 0.55),
+      baseAlpha: 0,
+      hue: randomRange(15, 35),      // orange-amber family
+      life: Math.random(),           // 0-1 phase offset
+      speed: randomRange(0.002, 0.006),
+    };
+  }
 
-    canvas.width = width * dpr;
+  function initParticles() {
+    particles.length = 0;
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const p = createParticle();
+      p.baseAlpha = p.alpha;
+      particles.push(p);
+    }
+  }
+
+  // ─── Orb / Aurora Layer ──────────────────────────────────────────────────────
+  const orbs = [
+    { cx: 0.18, cy: 0.35, rx: 0.42, ry: 0.55, hue: 22,  sat: 90,  lit: 50, a: 0.28 },
+    { cx: 0.78, cy: 0.65, rx: 0.38, ry: 0.45, hue: 200, sat: 80,  lit: 50, a: 0.14 },
+    { cx: 0.50, cy: 0.20, rx: 0.55, ry: 0.38, hue: 280, sat: 60,  lit: 35, a: 0.10 },
+    { cx: 0.85, cy: 0.15, rx: 0.30, ry: 0.30, hue: 30,  sat: 100, lit: 55, a: 0.18 },
+  ];
+
+  let time = 0;
+
+  // ─── Canvas Resize ────────────────────────────────────────────────────────────
+  function resizeCanvas() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    width = window.innerWidth;
+    height = window.innerHeight;
+
+    canvas.width  = width  * dpr;
     canvas.height = height * dpr;
-    canvas.style.width = width + 'px';
+    canvas.style.width  = width  + 'px';
     canvas.style.height = height + 'px';
 
     ctx.scale(dpr, dpr);
-
-    // Force redraw current frame after resize
-    const drawIndex = Math.min(FRAME_COUNT - 1, Math.max(0, Math.round(currentFrame)));
-    drawFrame(drawIndex, true);
+    initParticles();
   }
 
-  // Draw frame with aspect-ratio cover positioning and nearest-loaded fallback
-  function drawFrame(index, force = false) {
-    if (!force && index === lastRenderedIndex) return;
+  // ─── Draw Functions ───────────────────────────────────────────────────────────
 
-    let img = images[index];
+  function drawBackground() {
+    // Deep dark base — morphs subtly with scroll
+    const t = scrollProgress;
 
-    // Fallback to nearest loaded frame if target frame is still downloading
-    if (!img || !img.complete || img.naturalWidth === 0) {
-      for (let i = index - 1; i >= 0; i--) {
-        if (images[i] && images[i].complete && images[i].naturalWidth > 0) {
-          img = images[i];
-          break;
-        }
-      }
+    // Gradient shifts from deep navy-black → near-black purple as user scrolls
+    const grad = ctx.createLinearGradient(0, 0, width * 0.6, height);
+    grad.addColorStop(0,   `hsl(240, 18%, ${4 + t * 3}%)`);
+    grad.addColorStop(0.5, `hsl(250, 14%, ${3 + t * 2}%)`);
+    grad.addColorStop(1,   `hsl(260, 20%, ${2 + t * 2}%)`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, width, height);
+  }
+
+  function drawOrbs() {
+    const t = time * 0.00045;
+    const s = scrollProgress;
+
+    orbs.forEach((orb, i) => {
+      const pulse = Math.sin(t * (1.2 + i * 0.3) + i * 1.4) * 0.07;
+      const cx = (orb.cx + Math.sin(t * 0.7 + i) * 0.04 - s * 0.08 * (i % 2 === 0 ? 1 : -1)) * width;
+      const cy = (orb.cy + Math.cos(t * 0.5 + i) * 0.03 + s * 0.06) * height;
+      const rx = (orb.rx + pulse) * width;
+      const ry = (orb.ry + pulse) * height;
+
+      const alpha = orb.a * (0.7 + s * 0.5) + Math.sin(t + i) * 0.03;
+      const lit   = orb.lit + s * 12;
+
+      const radGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(rx, ry));
+      radGrad.addColorStop(0,   `hsla(${orb.hue}, ${orb.sat}%, ${lit}%, ${alpha})`);
+      radGrad.addColorStop(0.5, `hsla(${orb.hue}, ${orb.sat}%, ${lit * 0.6}%, ${alpha * 0.5})`);
+      radGrad.addColorStop(1,   `hsla(${orb.hue}, ${orb.sat}%, ${lit * 0.3}%, 0)`);
+
+      // Draw as an ellipse
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(rx / Math.max(rx, ry), ry / Math.max(rx, ry));
+      ctx.beginPath();
+      ctx.arc(0, 0, Math.max(rx, ry), 0, Math.PI * 2);
+      ctx.fillStyle = radGrad;
+      ctx.fill();
+      ctx.restore();
+    });
+  }
+
+  function drawParticles() {
+    const t = time * 0.001;
+    const s = scrollProgress;
+
+    particles.forEach(p => {
+      // Drift upward, wrap at top
+      p.x += p.vx;
+      p.y += p.vy * (1 + s * 1.8);  // particles speed up as user scrolls
+
+      if (p.y < -10) { p.y = height + 10; p.x = Math.random() * width; }
+      if (p.x < -10) { p.x = width + 10; }
+      if (p.x > width + 10) { p.x = -10; }
+
+      // Pulsing alpha
+      p.life = (p.life + p.speed) % 1;
+      const pAlpha = p.baseAlpha * (0.5 + Math.sin(p.life * Math.PI * 2) * 0.5) * (0.5 + s * 0.7);
+
+      // Orange glow dot
+      const grd = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.radius * 3);
+      grd.addColorStop(0,   `hsla(${p.hue}, 95%, 70%, ${pAlpha})`);
+      grd.addColorStop(1,   `hsla(${p.hue}, 90%, 55%, 0)`);
+
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius * 3, 0, Math.PI * 2);
+      ctx.fillStyle = grd;
+      ctx.fill();
+    });
+  }
+
+  function drawScanlines() {
+    // Very subtle horizontal scan-line texture
+    const lineSpacing = 4;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.018)';
+    for (let y = 0; y < height; y += lineSpacing) {
+      ctx.fillRect(0, y, width, 1);
+    }
+  }
+
+  function drawScrollOverlay() {
+    // As user scrolls down, dark overlay gently deepens (content sections darken bg)
+    const alpha = scrollProgress * 0.45;
+    ctx.fillStyle = `rgba(7, 7, 9, ${alpha})`;
+    ctx.fillRect(0, 0, width, height);
+  }
+
+  // ─── Noise Overlay (subtle grain) ────────────────────────────────────────────
+  function drawGrain() {
+    const imageData = ctx.createImageData(width, height);
+    const data = imageData.data;
+    const intensity = 8;
+    for (let i = 0; i < data.length; i += 4) {
+      const noise = (Math.random() * 2 - 1) * intensity;
+      data[i] = data[i + 1] = data[i + 2] = noise;
+      data[i + 3] = 14;
+    }
+    ctx.putImageData(imageData, 0, 0);
+  }
+
+  // ─── Main Render Loop ─────────────────────────────────────────────────────────
+  let lastGrainTime = 0;
+
+  function render(timestamp) {
+    time = timestamp;
+
+    // Smooth scroll lerp
+    scrollProgress += (targetProgress - scrollProgress) * 0.07;
+
+    drawBackground();
+    drawOrbs();
+    drawParticles();
+    drawScanlines();
+    drawScrollOverlay();
+
+    // Grain every ~100ms to avoid performance hit of per-frame pixel writes
+    if (timestamp - lastGrainTime > 100) {
+      drawGrain();
+      lastGrainTime = timestamp;
     }
 
-    if (!img || !img.complete || img.naturalWidth === 0) return;
-
-    const canvasWidth = window.innerWidth;
-    const canvasHeight = window.innerHeight;
-    const imgWidth = img.naturalWidth;
-    const imgHeight = img.naturalHeight;
-
-    // Aspect cover math
-    const hRatio = canvasWidth / imgWidth;
-    const vRatio = canvasHeight / imgHeight;
-    const ratio = Math.max(hRatio, vRatio);
-
-    const renderWidth = imgWidth * ratio;
-    const renderHeight = imgHeight * ratio;
-    const offsetX = (canvasWidth - renderWidth) / 2;
-    const offsetY = (canvasHeight - renderHeight) / 2;
-
-    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-    ctx.drawImage(img, 0, 0, imgWidth, imgHeight, offsetX, offsetY, renderWidth, renderHeight);
-
-    lastRenderedIndex = index;
+    animFrame = requestAnimationFrame(render);
   }
 
-  // Calculate target frame from current scroll position
-  function updateScrollTarget() {
-    const scrollTop = window.scrollY || window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
-    const docHeight = Math.max(
+  // ─── Scroll Handler ───────────────────────────────────────────────────────────
+  function updateScroll() {
+    const scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+    const docHeight  = Math.max(
       document.body.scrollHeight, document.documentElement.scrollHeight,
-      document.body.offsetHeight, document.documentElement.offsetHeight,
-      document.body.clientHeight, document.documentElement.clientHeight
+      document.body.offsetHeight, document.documentElement.offsetHeight
     );
-    const windowHeight = window.innerHeight || document.documentElement.clientHeight;
-    const maxScroll = Math.max(1, docHeight - windowHeight);
-    const scrollFraction = Math.max(0, Math.min(1, scrollTop / maxScroll));
+    const winHeight = window.innerHeight;
+    const maxScroll = Math.max(1, docHeight - winHeight);
+    targetProgress  = Math.min(1, Math.max(0, scrollTop / maxScroll));
 
-    targetFrame = scrollFraction * (FRAME_COUNT - 1);
-
-    // Hide scroll prompt on scroll
-    if (scrollTop > 40 && scrollPrompt && !scrollPrompt.classList.contains('fade-out')) {
-      scrollPrompt.classList.add('fade-out');
-    } else if (scrollTop <= 40 && scrollPrompt && scrollPrompt.classList.contains('fade-out')) {
-      scrollPrompt.classList.remove('fade-out');
+    // Scroll prompt
+    if (scrollPrompt) {
+      if (scrollTop > 40) scrollPrompt.classList.add('fade-out');
+      else scrollPrompt.classList.remove('fade-out');
     }
 
-    // Active Navbar link update
+    // Active nav link
     updateActiveNavLink();
   }
 
-  // Active link highlighter
   function updateActiveNavLink() {
     const navLinks = document.querySelectorAll('.nav-link');
     const sections = document.querySelectorAll('section[id]');
-    const scrollPos = (window.scrollY || document.documentElement.scrollTop) + 200;
+    const scrollPos = (window.scrollY || 0) + 200;
 
     sections.forEach(section => {
-      const top = section.offsetTop;
-      const height = section.offsetHeight;
-      const id = section.getAttribute('id');
-
-      if (scrollPos >= top && scrollPos < top + height) {
+      const top  = section.offsetTop;
+      const btm  = top + section.offsetHeight;
+      const id   = section.getAttribute('id');
+      if (scrollPos >= top && scrollPos < btm) {
         navLinks.forEach(link => {
           link.classList.remove('active');
-          if (link.getAttribute('href') === `#${id}`) {
-            link.classList.add('active');
-          }
+          if (link.getAttribute('href') === `#${id}`) link.classList.add('active');
         });
       }
     });
   }
 
-  // Continuous animation loop using lerp for buttery smooth scrolling
-  function animationLoop() {
-    const diff = targetFrame - currentFrame;
-    if (Math.abs(diff) > 0.001) {
-      currentFrame += diff * LERP_FACTOR;
-    } else {
-      currentFrame = targetFrame;
-    }
-
-    const frameIndex = Math.min(FRAME_COUNT - 1, Math.max(0, Math.round(currentFrame)));
-    drawFrame(frameIndex);
-
-    requestAnimationFrame(animationLoop);
-  }
-
-  // Preload all 240 frames into memory
-  function preloadImages() {
-    for (let i = 0; i < FRAME_COUNT; i++) {
-      const img = new Image();
-      img.onload = () => {
-        loadedCount++;
-        const percent = Math.floor((loadedCount / FRAME_COUNT) * 100);
-
-        if (progressBar) progressBar.style.width = `${percent}%`;
-        if (progressText) progressText.innerText = `${percent}%`;
-
-        // Render frame 0 immediately as soon as loaded
-        if (i === 0) {
-          drawFrame(0, true);
-        }
-
-        if (loadedCount === FRAME_COUNT) {
-          onAllImagesLoaded();
-        }
-      };
-
-      img.onerror = () => {
-        console.warn(`Failed to load frame ${i}: ${getFrameUrl(i)}`);
-        loadedCount++;
-        if (loadedCount === FRAME_COUNT) {
-          onAllImagesLoaded();
-        }
-      };
-
-      img.src = getFrameUrl(i);
-      images[i] = img;
-    }
-  }
-
-  // Called when all images have finished preloading
-  function onAllImagesLoaded() {
-    updateScrollTarget();
-    drawFrame(0, true);
-
-    setTimeout(() => {
-      if (loader) {
-        loader.classList.add('hidden');
+  // ─── Fake Loading Progress (since no images to load) ─────────────────────────
+  function fakeProgress() {
+    let pct = 0;
+    const interval = setInterval(() => {
+      pct += randomRange(8, 20);
+      if (pct >= 100) {
+        pct = 100;
+        clearInterval(interval);
+        if (progressBar)  progressBar.style.width = '100%';
+        if (progressText) progressText.innerText  = '100%';
+        setTimeout(() => {
+          if (loader) loader.classList.add('hidden');
+        }, 350);
+      } else {
+        if (progressBar)  progressBar.style.width = `${pct}%`;
+        if (progressText) progressText.innerText  = `${Math.floor(pct)}%`;
       }
-    }, 300);
+    }, 60);
   }
 
-  // Event Listeners
-  window.addEventListener('scroll', updateScrollTarget, { passive: true });
-  window.addEventListener('wheel', updateScrollTarget, { passive: true });
-  window.addEventListener('touchmove', updateScrollTarget, { passive: true });
-  window.addEventListener('resize', resizeCanvas, { passive: true });
-
-  // Initialization
+  // ─── Init ─────────────────────────────────────────────────────────────────────
   function init() {
     resizeCanvas();
-    preloadImages();
-    updateScrollTarget();
-    requestAnimationFrame(animationLoop);
+    updateScroll();
+    fakeProgress();
+    requestAnimationFrame(render);
+
+    window.addEventListener('scroll',    updateScroll,  { passive: true });
+    window.addEventListener('wheel',     updateScroll,  { passive: true });
+    window.addEventListener('touchmove', updateScroll,  { passive: true });
+    window.addEventListener('resize',    () => {
+      cancelAnimationFrame(animFrame);
+      resizeCanvas();
+      requestAnimationFrame(render);
+    }, { passive: true });
   }
 
   if (document.readyState === 'loading') {
@@ -212,4 +283,5 @@
   } else {
     init();
   }
+
 })();
